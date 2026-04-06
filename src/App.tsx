@@ -694,7 +694,7 @@ function App() {
 
                 <article className={`surface-block invalid-summary-card${hasInvalidStarts ? ' has-invalid' : ''}`}>
                   <div className="invalid-summary-head">
-                    <h3>启动质量追踪</h3>
+                    <h3>启动质量统计</h3>
                     <span className="invalid-summary-rate">本周有效率 {weeklyEffectiveRateLabel}</span>
                   </div>
                   <div className="invalid-summary-grid">
@@ -715,7 +715,7 @@ function App() {
                       <strong>{weeklyEffectiveRateLabel}</strong>
                     </div>
                   </div>
-                  <p className="invalid-summary-note">仅记录，不惩罚。目标是减少“开始后马上分心”。</p>
+                  <p className="invalid-summary-note">统计说明：无效启动不计入有效时长、目标达成与连续天数。</p>
                 </article>
               </div>
             )}

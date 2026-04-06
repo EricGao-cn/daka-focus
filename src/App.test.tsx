@@ -114,7 +114,7 @@ describe('App integration', () => {
     await screen.findByText('二次确认超时：本次已记为无效启动。')
     expect(screen.queryByText('当前会话进行中')).not.toBeInTheDocument()
     expect(screen.getByText(/今日已有 1 次无效启动/)).toBeInTheDocument()
-    const qualityCard = screen.getByRole('heading', { name: '启动质量追踪' }).closest('article')
+    const qualityCard = screen.getByRole('heading', { name: '启动质量统计' }).closest('article')
     expect(qualityCard).not.toBeNull()
     expect(within(qualityCard as HTMLElement).getByText('今日无效启动')).toBeInTheDocument()
     expect(within(qualityCard as HTMLElement).getAllByText('1 次')).toHaveLength(2)
