@@ -1,0 +1,18 @@
+{
+  "name": "科研打卡站",
+  "short_name": "科研打卡",
+  "description": "本地科研打卡与时长统计",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f7f7f6",
+  "theme_color": "#2e7d32",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "/pwa-icon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
