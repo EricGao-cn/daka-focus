@@ -1,7 +1,6 @@
 import { deleteDB, openDB, type DBSchema, type IDBPDatabase } from 'idb'
-import { addMilliseconds } from 'date-fns'
 
-import { DEFAULT_SETTINGS, STARTUP_CHECK_DELAY_MS } from '../constants'
+import { DEFAULT_SETTINGS } from '../constants'
 import type {
   EfficiencyRating,
   EndReminderPeriod,
@@ -42,7 +41,7 @@ function normalizeEfficiencyRating(value: unknown): EfficiencyRating | null {
 }
 
 function normalizeStartupCheckStatus(value: unknown): StartupCheckStatus {
-  if (value === 'pending' || value === 'confirmed' || value === 'invalid') {
+  if (value === 'confirmed' || value === 'invalid') {
     return value
   }
   return 'confirmed'
@@ -65,7 +64,7 @@ function normalizeSession(
 
   const startupCheckDueAt = typeof startupCheckDueAtRaw === 'string'
     ? startupCheckDueAtRaw
-    : addMilliseconds(new Date(session.startAt), STARTUP_CHECK_DELAY_MS).toISOString()
+    : session.startAt
 
   const startupCheckPromptedAt = typeof startupCheckPromptedAtRaw === 'string' ? startupCheckPromptedAtRaw : null
 

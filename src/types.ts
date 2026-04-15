@@ -1,7 +1,7 @@
 export type Period = 'morning' | 'afternoon' | 'evening'
 export type EndReminderPeriod = Extract<Period, 'morning' | 'afternoon'>
 export type EfficiencyRating = 'high' | 'medium' | 'low'
-export type StartupCheckStatus = 'pending' | 'confirmed' | 'invalid'
+export type StartupCheckStatus = 'confirmed' | 'invalid'
 export type StartupInvalidReason = 'timeout' | 'self_reported'
 
 export interface PeriodRange {

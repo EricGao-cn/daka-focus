@@ -3,9 +3,8 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import App from './App'
-import { clearDatabaseForTests, putSession } from './lib/db'
+import { clearDatabaseForTests } from './lib/db'
 import * as shareLib from './lib/share'
-import { getSessionSnapshot } from './lib/sessionService'
 
 const EXPECTED_SHARE_URL = 'https://daka-tan.vercel.app'
 
@@ -61,92 +60,20 @@ describe('App integration', () => {
     expect(screen.getByText('效率：未评')).toBeInTheDocument()
   })
 
-  it('shows startup second-check modal and continues when confirmed', async () => {
+  it('supports marking invalid startup from end-review modal', async () => {
     const user = userEvent.setup()
-    const firstRender = render(<App />)
+    render(<App />)
 
     await screen.findByText('科研启动区')
+    await user.type(screen.getByPlaceholderText('例如：先复现实验 A 的结果'), '状态波动')
     await user.click(screen.getByRole('button', { name: '开始科研' }))
     await screen.findByText('当前会话进行中')
 
-    const snapshot = await getSessionSnapshot()
-    const active = snapshot.activeSession
-    expect(active).not.toBeNull()
-    await putSession({
-      ...active!,
-      startupCheckStatus: 'pending',
-      startupCheckDueAt: new Date(Date.now() - 10_000).toISOString(),
-      startupCheckPromptedAt: new Date().toISOString(),
-      startupInvalidReason: null,
-    })
-
-    firstRender.unmount()
-    render(<App />)
-
-    await screen.findByText('开始后 5 分钟二次确认')
-    await user.click(screen.getByRole('button', { name: '我在科研（继续）' }))
-    await screen.findByText('已确认继续科研。')
-    expect(screen.getByText('当前会话进行中')).toBeInTheDocument()
-  })
-
-  it('marks startup as invalid when second-check times out', async () => {
-    const user = userEvent.setup()
-    const firstRender = render(<App />)
-
-    await screen.findByText('科研启动区')
-    await user.click(screen.getByRole('button', { name: '开始科研' }))
-    await screen.findByText('当前会话进行中')
-
-    const snapshot = await getSessionSnapshot()
-    const active = snapshot.activeSession
-    expect(active).not.toBeNull()
-    await putSession({
-      ...active!,
-      startupCheckStatus: 'pending',
-      startupCheckDueAt: new Date(Date.now() - 120_000).toISOString(),
-      startupCheckPromptedAt: new Date(Date.now() - 70_000).toISOString(),
-      startupInvalidReason: null,
-    })
-
-    firstRender.unmount()
-    render(<App />)
-
-    await screen.findByText('二次确认超时：本次已记为无效启动。')
-    expect(screen.queryByText('当前会话进行中')).not.toBeInTheDocument()
-    expect(screen.getByText(/今日已有 1 次无效启动/)).toBeInTheDocument()
-    const qualityCard = screen.getByRole('heading', { name: '启动质量统计' }).closest('article')
-    expect(qualityCard).not.toBeNull()
-    expect(within(qualityCard as HTMLElement).getByText('今日无效启动')).toBeInTheDocument()
-    expect(within(qualityCard as HTMLElement).getAllByText('1 次')).toHaveLength(2)
-  })
-
-  it('marks startup as invalid when user self-reports distraction', async () => {
-    const user = userEvent.setup()
-    const firstRender = render(<App />)
-
-    await screen.findByText('科研启动区')
-    await user.click(screen.getByRole('button', { name: '开始科研' }))
-    await screen.findByText('当前会话进行中')
-
-    const snapshot = await getSessionSnapshot()
-    const active = snapshot.activeSession
-    expect(active).not.toBeNull()
-    await putSession({
-      ...active!,
-      startupCheckStatus: 'pending',
-      startupCheckDueAt: new Date(Date.now() - 10_000).toISOString(),
-      startupCheckPromptedAt: new Date().toISOString(),
-      startupInvalidReason: null,
-    })
-
-    firstRender.unmount()
-    render(<App />)
-
-    await screen.findByText('开始后 5 分钟二次确认')
-    await user.click(screen.getByRole('button', { name: '我分心了（结束并记无效）' }))
-
-    await screen.findByText('已记录无效启动，会话已结束。')
-    expect(screen.queryByText('当前会话进行中')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '结束科研' }))
+    await screen.findByText('结束科研并写一句复盘')
+    await user.click(screen.getByRole('checkbox', { name: '标记为无效启动（不计入有效统计）' }))
+    await user.click(screen.getByRole('button', { name: '确认结束' }))
+    await screen.findByText('会话已结束，复盘已保存。')
 
     await user.click(screen.getByRole('tab', { name: '记录' }))
     expect(screen.getByText('无效启动')).toBeInTheDocument()

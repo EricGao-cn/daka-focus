@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { format } from 'date-fns'
 
 import './App.css'
@@ -7,26 +7,22 @@ import {
   DEFAULT_SETTINGS,
   PERIOD_LABEL,
   PERIODS,
-  STARTUP_CHECK_RESPONSE_WINDOW_MS,
 } from './constants'
 import { buildDailySummary, buildWeeklySummary, getWeeklyReportSentence, sessionMinutes } from './lib/analytics'
-import { getReminderState, getSettings, saveReminderState, saveSettings } from './lib/db'
+import { getReminderState, getSettings, putSession, saveReminderState, saveSettings } from './lib/db'
 import { sendBarkPush, sendTestPush, validateBarkConfig } from './lib/mobilePush'
-import { markEndReminderDone, markEndReminderSnoozed, markReminderSent, shouldNotifyReminder, shouldTriggerEndReminder } from './lib/reminder'
+import { markReminderSent, shouldNotifyReminder } from './lib/reminder'
 import {
-  confirmStartupCheck,
   endResearchSession,
   getSessionSnapshot,
   incrementInterrupt,
-  invalidateStartupSession,
-  promptStartupCheck,
   removeFinishedSession,
   startResearchSession,
 } from './lib/sessionService'
 import { buildShareUrl, copyToClipboard } from './lib/share'
 import { formatClock, formatDateKey, formatMinutes, resolvePeriod } from './lib/time'
 
-import type { EfficiencyRating, EndReminderPeriod, Period, ReminderState, ResearchSession, UserSettings } from './types'
+import type { EfficiencyRating, Period, ReminderState, ResearchSession, UserSettings } from './types'
 
 function App() {
   type Screen = 'dashboard' | 'settings'
@@ -39,8 +35,8 @@ function App() {
   const [goalDraft, setGoalDraft] = useState('')
   const [reviewDraft, setReviewDraft] = useState('')
   const [reviewEfficiencyRating, setReviewEfficiencyRating] = useState<EfficiencyRating | null>(null)
+  const [reviewMarkInvalidStartup, setReviewMarkInvalidStartup] = useState(false)
   const [showReviewModal, setShowReviewModal] = useState(false)
-  const [showStartupCheckModal, setShowStartupCheckModal] = useState(false)
   const [flashMessage, setFlashMessage] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
   const [now, setNow] = useState(new Date())
@@ -50,7 +46,6 @@ function App() {
     endReminderDonePeriods: [],
     endReminderSnoozeUntil: {},
   })
-  const [endReminderPeriod, setEndReminderPeriod] = useState<EndReminderPeriod | null>(null)
   const [screen, setScreen] = useState<Screen>('dashboard')
   const [dashboardTab, setDashboardTab] = useState<DashboardTab>('overview')
   const [showMobilePushFields, setShowMobilePushFields] = useState(false)
@@ -60,7 +55,6 @@ function App() {
     typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'unsupported',
   )
   const [shareUrl, setShareUrl] = useState('')
-  const startupCheckBusyRef = useRef(false)
 
   const todaySummary = useMemo(() => buildDailySummary(now, sessions, settings, now), [now, sessions, settings])
   const weeklySummary = useMemo(() => buildWeeklySummary(now, sessions, settings, now), [now, sessions, settings])
@@ -68,13 +62,6 @@ function App() {
   const todayDateKey = formatDateKey(now)
   const currentPeriod = resolvePeriod(now, settings.periodRanges)
   const activeMinutes = activeSession ? sessionMinutes(activeSession, now) : 0
-  const startupCheckCountdown = useMemo(() => {
-    if (!activeSession || activeSession.startupCheckStatus !== 'pending' || !activeSession.startupCheckPromptedAt) {
-      return null
-    }
-    const deadline = new Date(activeSession.startupCheckPromptedAt).getTime() + STARTUP_CHECK_RESPONSE_WINDOW_MS
-    return Math.max(0, Math.ceil((deadline - now.getTime()) / 1000))
-  }, [activeSession, now])
 
   const dailyProgress = settings.dailyGoalMinutes > 0 ? Math.min(100, (todaySummary.totalMinutes / settings.dailyGoalMinutes) * 100) : 0
   const weeklyProgress = settings.weeklyGoalMinutes > 0 ? Math.min(100, (weeklySummary.totalMinutes / settings.weeklyGoalMinutes) * 100) : 0
@@ -88,6 +75,59 @@ function App() {
     low: '低效',
   }
 
+  async function tryRepairSpecificSession(snapshotSessions: ResearchSession[]): Promise<boolean> {
+    const targetStartAt = '2026-04-07T10:47:00+08:00'
+    const targetEndAt = '2026-04-07T12:07:00+08:00'
+    const targetStartDate = new Date(targetStartAt)
+    const targetReview = 'pairwise 推完了，文章润色 TODO'
+
+    const target = snapshotSessions
+      .filter((session) => {
+        if (!session.endAt) {
+          return false
+        }
+        const containsPairwise = session.goalNote.includes('pairwise') || session.reviewNote.includes('pairwise')
+        const isStartupTimeoutInvalid = session.startupCheckStatus === 'invalid' && session.startupInvalidReason === 'timeout'
+        return containsPairwise && isStartupTimeoutInvalid
+      })
+      .sort((a, b) => {
+        const deltaA = Math.abs(new Date(a.startAt).getTime() - targetStartDate.getTime())
+        const deltaB = Math.abs(new Date(b.startAt).getTime() - targetStartDate.getTime())
+        return deltaA - deltaB
+      })[0]
+
+    if (!target) {
+      return false
+    }
+
+    const noChangeNeeded = (
+      new Date(target.startAt).getTime() === targetStartDate.getTime()
+      && target.endAt === new Date(targetEndAt).toISOString()
+      && target.reviewNote === targetReview
+      && target.efficiencyRating === 'high'
+      && target.startupCheckStatus === 'confirmed'
+      && target.startupInvalidReason === null
+    )
+    if (noChangeNeeded) {
+      return false
+    }
+
+    await putSession({
+      ...target,
+      startAt: new Date(targetStartAt).toISOString(),
+      endAt: new Date(targetEndAt).toISOString(),
+      period: 'morning',
+      reviewNote: targetReview,
+      efficiencyRating: 'high',
+      startupCheckStatus: 'confirmed',
+      startupCheckDueAt: new Date(new Date(targetStartAt).getTime() + 5 * 60 * 1000).toISOString(),
+      startupCheckPromptedAt: null,
+      startupInvalidReason: null,
+      updatedAt: new Date().toISOString(),
+    })
+    return true
+  }
+
   useEffect(() => {
     const timer = window.setInterval(() => {
       setNow(new Date())
@@ -98,13 +138,18 @@ function App() {
   useEffect(() => {
     async function loadInitialState() {
       try {
-        const [loadedSettings, snapshot] = await Promise.all([getSettings(), getSessionSnapshot()])
+        const [loadedSettings, initialSnapshot] = await Promise.all([getSettings(), getSessionSnapshot()])
         const state = await getReminderState(formatDateKey(new Date()))
+        const repaired = await tryRepairSpecificSession(initialSnapshot.sessions)
+        const snapshot = repaired ? await getSessionSnapshot() : initialSnapshot
 
         setSettingsState(loadedSettings)
         setSessions(snapshot.sessions)
         setActiveSession(snapshot.activeSession)
         setReminderState(state)
+        if (repaired) {
+          setFlashMessage('已修复 04-07 10:47 这条会话数据。')
+        }
       } catch (error) {
         setErrorMessage(error instanceof Error ? error.message : '初始化失败。')
       } finally {
@@ -119,7 +164,6 @@ function App() {
     async function syncReminderState() {
       const loaded = await getReminderState(todayDateKey)
       setReminderState(loaded)
-      setEndReminderPeriod(null)
     }
 
     void syncReminderState()
@@ -128,11 +172,6 @@ function App() {
   useEffect(() => {
     const ticker = window.setInterval(() => {
       const current = new Date()
-      const endPeriod = shouldTriggerEndReminder(current, settings, reminderState, activeSession)
-      if (endPeriod && !endReminderPeriod && !showReviewModal) {
-        setEndReminderPeriod(endPeriod)
-      }
-
       const period = shouldNotifyReminder(current, settings, reminderState, sessions)
       if (!period) {
         return
@@ -171,7 +210,7 @@ function App() {
     }, 30000)
 
     return () => window.clearInterval(ticker)
-  }, [settings, reminderState, sessions, activeSession, endReminderPeriod, showReviewModal])
+  }, [settings, reminderState, sessions])
 
   useEffect(() => {
     if (settings.mobilePush.enabled) {
@@ -189,70 +228,6 @@ function App() {
     }
     setShowEfficiencyViz(weeklySummary.ratedSessionCount > 0)
   }, [loading, weeklySummary.ratedSessionCount, efficiencyVizTouched])
-
-  useEffect(() => {
-    if (showReviewModal || endReminderPeriod) {
-      setShowStartupCheckModal(false)
-      return
-    }
-
-    if (!activeSession || activeSession.startupCheckStatus !== 'pending') {
-      setShowStartupCheckModal(false)
-      return
-    }
-    const pendingSession = activeSession
-
-    const nowMs = now.getTime()
-    const dueMs = new Date(pendingSession.startupCheckDueAt).getTime()
-    if (nowMs < dueMs) {
-      setShowStartupCheckModal(false)
-      return
-    }
-
-    async function syncStartupCheck() {
-      if (startupCheckBusyRef.current) {
-        return
-      }
-
-      try {
-        startupCheckBusyRef.current = true
-
-        if (!pendingSession.startupCheckPromptedAt) {
-          const timeoutDeadline = dueMs + STARTUP_CHECK_RESPONSE_WINDOW_MS
-          if (nowMs >= timeoutDeadline) {
-            await invalidateStartupSession(pendingSession.id, 'timeout')
-            await refreshSnapshot()
-            setShowStartupCheckModal(false)
-            setFlashMessage('二次确认超时：本次已记为无效启动。')
-            return
-          }
-
-          await promptStartupCheck(pendingSession.id)
-          await refreshSnapshot()
-          setShowStartupCheckModal(true)
-          return
-        }
-
-        const promptedMs = new Date(pendingSession.startupCheckPromptedAt).getTime()
-        const deadline = promptedMs + STARTUP_CHECK_RESPONSE_WINDOW_MS
-        if (nowMs >= deadline) {
-          await invalidateStartupSession(pendingSession.id, 'timeout')
-          await refreshSnapshot()
-          setShowStartupCheckModal(false)
-          setFlashMessage('二次确认超时：本次已记为无效启动。')
-          return
-        }
-
-        setShowStartupCheckModal(true)
-      } catch (error) {
-        setErrorMessage(error instanceof Error ? error.message : '二次确认处理失败。')
-      } finally {
-        startupCheckBusyRef.current = false
-      }
-    }
-
-    void syncStartupCheck()
-  }, [activeSession, now, showReviewModal, endReminderPeriod])
 
   async function refreshSnapshot() {
     const snapshot = await getSessionSnapshot()
@@ -275,40 +250,13 @@ function App() {
   async function onEndConfirm() {
     setErrorMessage('')
     try {
-      await endResearchSession(reviewDraft, reviewEfficiencyRating)
+      await endResearchSession(reviewDraft, reviewEfficiencyRating, reviewMarkInvalidStartup)
       setReviewDraft('')
       setReviewEfficiencyRating(null)
+      setReviewMarkInvalidStartup(false)
       setShowReviewModal(false)
       await refreshSnapshot()
       setFlashMessage('会话已结束，复盘已保存。')
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : '结束失败。')
-    }
-  }
-
-  async function onConfirmStartupCheck() {
-    if (!activeSession) {
-      return
-    }
-    try {
-      await confirmStartupCheck(activeSession.id)
-      await refreshSnapshot()
-      setShowStartupCheckModal(false)
-      setFlashMessage('已确认继续科研。')
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : '确认失败。')
-    }
-  }
-
-  async function onInvalidateStartupBySelf() {
-    if (!activeSession) {
-      return
-    }
-    try {
-      await invalidateStartupSession(activeSession.id, 'self_reported')
-      await refreshSnapshot()
-      setShowStartupCheckModal(false)
-      setFlashMessage('已记录无效启动，会话已结束。')
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : '结束失败。')
     }
@@ -389,57 +337,15 @@ function App() {
     }
   }
 
-  async function onSnoozeEndReminder() {
-    if (!endReminderPeriod) {
-      return
-    }
-
-    const snoozeUntil = new Date(Date.now() + 15 * 60 * 1000)
-    const nextState = markEndReminderSnoozed(reminderState, endReminderPeriod, snoozeUntil)
-    setReminderState(nextState)
-    await saveReminderState(nextState)
-    setEndReminderPeriod(null)
-    setFlashMessage('收尾提醒已延后 15 分钟。')
-  }
-
-  async function onSkipEndReminderOnce() {
-    if (!endReminderPeriod) {
-      return
-    }
-
-    const nextState = markEndReminderDone(reminderState, endReminderPeriod)
-    setReminderState(nextState)
-    await saveReminderState(nextState)
-    setEndReminderPeriod(null)
-    setFlashMessage('已忽略本时段收尾提醒。')
-  }
-
-  async function onFinishFromEndReminder() {
-    if (!endReminderPeriod || !activeSession) {
-      setEndReminderPeriod(null)
-      return
-    }
-
-    try {
-      await endResearchSession('收尾提醒结束：去吃饭/休息。', null)
-      const nextState = markEndReminderDone(reminderState, endReminderPeriod)
-      setReminderState(nextState)
-      await saveReminderState(nextState)
-      await refreshSnapshot()
-      setEndReminderPeriod(null)
-      setFlashMessage('已根据收尾提醒结束打卡。')
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : '收尾结束失败。')
-    }
-  }
-
   function onOpenReviewModal() {
     setReviewEfficiencyRating(null)
+    setReviewMarkInvalidStartup(false)
     setShowReviewModal(true)
   }
 
   function onCloseReviewModal() {
     setReviewEfficiencyRating(null)
+    setReviewMarkInvalidStartup(false)
     setShowReviewModal(false)
   }
 
@@ -491,16 +397,6 @@ function App() {
     setSettingsState((prev) => ({
       ...prev,
       [key]: Number.isNaN(value) ? 0 : Math.max(0, value),
-    }))
-  }
-
-  function updateEndReminderTime(period: EndReminderPeriod, value: string) {
-    setSettingsState((prev) => ({
-      ...prev,
-      endReminderTimes: {
-        ...prev.endReminderTimes,
-        [period]: value,
-      },
     }))
   }
 
@@ -731,6 +627,21 @@ function App() {
                   <p>{getWeeklyReportSentence(weeklySummary)}</p>
                 </article>
 
+                <article className="surface-block">
+                  <h3>最近 7 天趋势</h3>
+                  <div className="trend">
+                    {weeklySummary.last7Days.map((item) => {
+                      const height = Math.max(8, (item.minutes / trendMax) * 96)
+                      return (
+                        <div key={item.dateKey} className="bar-wrap" title={`${item.dateKey} ${item.minutes} 分钟`}>
+                          <div className="bar" style={{ height }} />
+                          <span>{item.dateKey.slice(5)}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </article>
+
                 <article className="surface-block efficiency-card">
                   <div className="efficiency-head">
                     <h3>本周效率</h3>
@@ -791,21 +702,6 @@ function App() {
                       )}
                     </>
                   )}
-                </article>
-
-                <article className="surface-block">
-                  <h3>最近 7 天趋势</h3>
-                  <div className="trend">
-                    {weeklySummary.last7Days.map((item) => {
-                      const height = Math.max(8, (item.minutes / trendMax) * 96)
-                      return (
-                        <div key={item.dateKey} className="bar-wrap" title={`${item.dateKey} ${item.minutes} 分钟`}>
-                          <div className="bar" style={{ height }} />
-                          <span>{item.dateKey.slice(5)}</span>
-                        </div>
-                      )
-                    })}
-                  </div>
                 </article>
               </div>
             )}
@@ -890,44 +786,6 @@ function App() {
                 </label>
               ))}
             </div>
-
-            <article className="mobile-push-panel">
-              <div className="section-head">
-                <h3>收尾提醒</h3>
-                <label className="checkbox-inline">
-                  <input
-                    type="checkbox"
-                    checked={settings.endReminderEnabled}
-                    onChange={(event) =>
-                      setSettingsState((prev) => ({
-                        ...prev,
-                        endReminderEnabled: event.target.checked,
-                      }))
-                    }
-                  />
-                  启用收尾提醒
-                </label>
-              </div>
-              <p className="hint">固定时间提醒：到点弹出“立即结束 / 延后15分钟 / 忽略本次”。</p>
-              <div className="end-reminder-row">
-                <label className="field">
-                  上午收尾提醒
-                  <input
-                    type="time"
-                    value={settings.endReminderTimes.morning}
-                    onChange={(event) => updateEndReminderTime('morning', event.target.value)}
-                  />
-                </label>
-                <label className="field">
-                  下午收尾提醒
-                  <input
-                    type="time"
-                    value={settings.endReminderTimes.afternoon}
-                    onChange={(event) => updateEndReminderTime('afternoon', event.target.value)}
-                  />
-                </label>
-              </div>
-            </article>
           </section>
 
           <section className="card">
@@ -1062,38 +920,6 @@ function App() {
         </>
       )}
 
-      {endReminderPeriod && !showReviewModal && (
-        <section className="modal-mask">
-          <article className="modal">
-            <h3>{PERIOD_LABEL[endReminderPeriod]}收尾提醒</h3>
-            <p>到收尾提醒时间了，是否现在结束打卡去吃饭/休息？</p>
-            <div className="actions">
-              <button type="button" onClick={onFinishFromEndReminder}>立即结束</button>
-              <button type="button" onClick={onSnoozeEndReminder}>延后 15 分钟</button>
-              <button type="button" onClick={onSkipEndReminderOnce}>忽略本次</button>
-            </div>
-          </article>
-        </section>
-      )}
-
-      {showStartupCheckModal && activeSession && !showReviewModal && !endReminderPeriod && (
-        <section className="modal-mask">
-          <article className="modal">
-            <h3>开始后 5 分钟二次确认</h3>
-            <p>你还在科研状态吗？</p>
-            <p className="hint">
-              {startupCheckCountdown === null ? '请尽快确认。' : `请在 ${startupCheckCountdown} 秒内确认，否则将自动记为无效启动。`}
-            </p>
-            <div className="actions">
-              <button type="button" onClick={onConfirmStartupCheck}>我在科研（继续）</button>
-              <button type="button" className="button-secondary" onClick={onInvalidateStartupBySelf}>
-                我分心了（结束并记无效）
-              </button>
-            </div>
-          </article>
-        </section>
-      )}
-
       {showReviewModal && (
         <section className="modal-mask">
           <article className="modal">
@@ -1103,36 +929,56 @@ function App() {
               onChange={(event) => setReviewDraft(event.target.value)}
               placeholder="例如：今天完成了方法复现，明天开始调参。"
             />
-            <fieldset className="rating-fieldset">
-              <legend>本段效率（可跳过）</legend>
-              <label className="rating-option">
-                <input
-                  type="radio"
-                  name="efficiency-rating"
-                  checked={reviewEfficiencyRating === 'high'}
-                  onChange={() => setReviewEfficiencyRating('high')}
-                />
-                高
-              </label>
-              <label className="rating-option">
-                <input
-                  type="radio"
-                  name="efficiency-rating"
-                  checked={reviewEfficiencyRating === 'medium'}
-                  onChange={() => setReviewEfficiencyRating('medium')}
-                />
-                中
-              </label>
-              <label className="rating-option">
-                <input
-                  type="radio"
-                  name="efficiency-rating"
-                  checked={reviewEfficiencyRating === 'low'}
-                  onChange={() => setReviewEfficiencyRating('low')}
-                />
-                低
-              </label>
-            </fieldset>
+            <div className="review-meta-row">
+              <section className="rating-panel">
+                <p className="rating-title">本段效率（可跳过）</p>
+                <div className="rating-options">
+                  <label className={`rating-option rating-option-pill${reviewEfficiencyRating === 'high' ? ' is-selected' : ''}`}>
+                    <input
+                      type="radio"
+                      name="efficiency-rating"
+                      checked={reviewEfficiencyRating === 'high'}
+                      onChange={() => setReviewEfficiencyRating('high')}
+                    />
+                    <span>高</span>
+                  </label>
+                  <label className={`rating-option rating-option-pill${reviewEfficiencyRating === 'medium' ? ' is-selected' : ''}`}>
+                    <input
+                      type="radio"
+                      name="efficiency-rating"
+                      checked={reviewEfficiencyRating === 'medium'}
+                      onChange={() => setReviewEfficiencyRating('medium')}
+                    />
+                    <span>中</span>
+                  </label>
+                  <label className={`rating-option rating-option-pill${reviewEfficiencyRating === 'low' ? ' is-selected' : ''}`}>
+                    <input
+                      type="radio"
+                      name="efficiency-rating"
+                      checked={reviewEfficiencyRating === 'low'}
+                      onChange={() => setReviewEfficiencyRating('low')}
+                    />
+                    <span>低</span>
+                  </label>
+                </div>
+              </section>
+              <section className="review-invalid-panel">
+                <label
+                  className="checkbox-field review-invalid-toggle"
+                  aria-label="标记为无效启动（不计入有效统计）"
+                >
+                  <input
+                    type="checkbox"
+                    checked={reviewMarkInvalidStartup}
+                    onChange={(event) => setReviewMarkInvalidStartup(event.target.checked)}
+                  />
+                  <span className="review-invalid-copy">
+                    <span className="review-invalid-title">标记为无效启动</span>
+                    <span className="review-invalid-desc">不计入有效统计</span>
+                  </span>
+                </label>
+              </section>
+            </div>
             <div className="actions">
               <button type="button" onClick={onCloseReviewModal}>取消</button>
               <button type="button" onClick={onEndConfirm}>确认结束</button>

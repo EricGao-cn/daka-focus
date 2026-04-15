@@ -38,5 +38,3 @@ export const DEFAULT_SETTINGS: UserSettings = {
 }
 
 export const APP_TITLE = '科研打卡站'
-export const STARTUP_CHECK_DELAY_MS = 5 * 60 * 1000
-export const STARTUP_CHECK_RESPONSE_WINDOW_MS = 60 * 1000

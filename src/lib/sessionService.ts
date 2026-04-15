@@ -3,13 +3,10 @@ import {
   bumpInterrupt,
   canStart,
   closeSession,
-  confirmStartupCheck as confirmStartupCheckState,
   createSession,
-  invalidateStartupSession as invalidateStartupSessionState,
-  markStartupCheckPrompted,
 } from './sessionMachine'
 
-import type { EfficiencyRating, ResearchSession, StartupInvalidReason } from '../types'
+import type { EfficiencyRating, ResearchSession } from '../types'
 
 export async function startResearchSession(goalNote: string): Promise<ResearchSession> {
   const active = await getActiveSession()
@@ -26,49 +23,14 @@ export async function startResearchSession(goalNote: string): Promise<ResearchSe
 export async function endResearchSession(
   reviewNote: string,
   efficiencyRating: EfficiencyRating | null = null,
+  markInvalidStartup = false,
 ): Promise<ResearchSession> {
   const active = await getActiveSession()
   if (!active) {
     throw new Error('当前没有进行中的会话。')
   }
 
-  const updated = closeSession(active, reviewNote, new Date(), efficiencyRating)
-  await putSession(updated)
-  return updated
-}
-
-export async function promptStartupCheck(sessionId: string): Promise<ResearchSession> {
-  const session = await getSessionById(sessionId)
-  if (!session) {
-    throw new Error('会话不存在。')
-  }
-
-  const updated = markStartupCheckPrompted(session)
-  await putSession(updated)
-  return updated
-}
-
-export async function confirmStartupCheck(sessionId: string): Promise<ResearchSession> {
-  const session = await getSessionById(sessionId)
-  if (!session) {
-    throw new Error('会话不存在。')
-  }
-
-  const updated = confirmStartupCheckState(session)
-  await putSession(updated)
-  return updated
-}
-
-export async function invalidateStartupSession(
-  sessionId: string,
-  reason: StartupInvalidReason,
-): Promise<ResearchSession> {
-  const session = await getSessionById(sessionId)
-  if (!session) {
-    throw new Error('会话不存在。')
-  }
-
-  const updated = invalidateStartupSessionState(session, reason)
+  const updated = closeSession(active, reviewNote, new Date(), efficiencyRating, markInvalidStartup)
   await putSession(updated)
   return updated
 }
